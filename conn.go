@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+type ConnHandler interface {
+	OnOpened(conn Conn) (err error)   // 打开连接触发
+	OnClosed(conn Conn, err error)    // 关闭连接触发
+	OnActivate(conn Conn) (err error) // 收到数据触发
+}
+
 type Conn interface {
 	net.Conn
 	IsClosed() bool             // 连接是否已关闭
@@ -23,7 +29,7 @@ type connection struct {
 	flag    *int32
 	buffer  *bytes.Buffer
 	err     error
-	handle  Handler
+	handle  ConnHandler
 	cnt     *int32
 	ctx     interface{}
 	buffs   *buffs
@@ -126,7 +132,7 @@ func (c *connection) run() {
 	}
 }
 
-func newConn(svr *server, conn net.Conn) {
+func newSvrConn(svr *server, conn net.Conn) {
 	c := &connection{
 		conn:    conn,
 		closed:  0,
@@ -141,4 +147,22 @@ func newConn(svr *server, conn net.Conn) {
 		buffs:   svr.buffs,
 	}
 	go c.run()
+}
+
+func newCliConn(cli *client, conn net.Conn) *connection {
+	c := &connection{
+		conn:    conn,
+		closed:  0,
+		reading: 0,
+		writMu:  sync.Mutex{},
+		flag:    &cli.running,
+		buffer:  new(bytes.Buffer),
+		err:     nil,
+		handle:  cli.handle,
+		cnt:     &cli.conns,
+		ctx:     nil,
+		buffs:   cli.buffs,
+	}
+	go c.run()
+	return c
 }

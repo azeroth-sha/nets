@@ -7,12 +7,12 @@ import (
 )
 
 type Handler interface {
-	OnBoot(svr *server) (err error)     // 启动触发
-	OnShutdown(svr *server) (err error) // 关闭触发
-	OnOpened(conn Conn) (err error)     // 打开连接触发
-	OnClosed(conn Conn, err error)      // 关闭连接触发
-	OnActivate(conn Conn) (err error)   // 收到数据触发
-	OnTick() (dur time.Duration)        // 定时触发
+	OnBoot(svr Server) (err error)     // 启动触发
+	OnShutdown(svr Server) (err error) // 关闭触发
+	OnOpened(conn Conn) (err error)    // 打开连接触发
+	OnClosed(conn Conn, err error)     // 关闭连接触发
+	OnActivate(conn Conn) (err error)  // 收到数据触发
+	OnTick() (dur time.Duration)       // 定时触发
 }
 
 type Server interface {

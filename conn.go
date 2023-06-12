@@ -11,7 +11,7 @@ import (
 type Conn interface {
 	Read(b []byte) (n int, err error)   // 读取数据
 	Write(b []byte) (n int, err error)  // 写入数据
-	Conn() net.Conn                     // 返回原始连接
+	Conn() net.Conn                     // 返回原始连接(不建议)
 	Close() error                       // 关闭连接
 	LocalAddr() net.Addr                // 返回本地网络地址
 	RemoteAddr() net.Addr               // 返回远端网络地址

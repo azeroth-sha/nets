@@ -12,7 +12,7 @@ type ListenCtl func(network, address string, c syscall.RawConn) error
 
 // Listen 通过协议连接监听端口
 func Listen(protoAddr string, keepalive time.Duration, ctl ListenCtl) (net.Listener, error) {
-	proto, addr, err := ParseProtoAddr(protoAddr)
+	proto, addr, err := parseAddr(protoAddr)
 	if err != nil {
 		return nil, err
 	}

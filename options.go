@@ -24,3 +24,10 @@ func WithTick(flag bool) SvrOption {
 		svr.tick = flag
 	}
 }
+
+// WithBufCap 自定义buf容量
+func WithBufCap(size int) SvrOption {
+	return func(svr *server) {
+		svr.buffs.reset(int32(size))
+	}
+}

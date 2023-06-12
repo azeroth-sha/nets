@@ -7,12 +7,12 @@ import (
 )
 
 type Handler interface {
-	OnBoot(svr Server) (err error)     // 启动触发
-	OnShutdown(svr Server) (err error) // 关闭触发
-	OnOpened(conn Conn) (err error)    // 打开连接触发
-	OnClosed(conn Conn, err error)     // 关闭连接触发
-	OnActivate(conn Conn) (err error)  // 收到数据触发
-	OnTick() (dur time.Duration)       // 定时触发
+	OnBoot(svr Server) (err error)    // 启动触发
+	OnShutdown(svr Server)            // 关闭触发
+	OnOpened(conn Conn) (err error)   // 打开连接触发
+	OnClosed(conn Conn, err error)    // 关闭连接触发
+	OnActivate(conn Conn) (err error) // 收到数据触发
+	OnTick() (dur time.Duration)      // 定时触发
 }
 
 type Server interface {
@@ -32,6 +32,7 @@ type server struct {
 	handle    Handler
 	tick      bool
 	conns     int32
+	buffs     *buffs
 }
 
 func (s *server) ticker() {
@@ -50,7 +51,8 @@ func (s *server) ticker() {
 	}
 }
 
-func (s *server) Serve() error {
+// Serve 启动服务
+func (s *server) Serve() (err error) {
 	if atomic.SwapInt32(&s.running, 1) != 0 {
 		return ErrRunning
 	}
@@ -61,30 +63,32 @@ func (s *server) Serve() error {
 		s.listen = listen
 		s.closedCh = make(chan struct{}, 0)
 	}
-	defer s.Shutdown()
-	if err := s.handle.OnBoot(s); err != nil {
-		_ = s.listen.Close()
+	defer func() {
+		if e := s.Shutdown(); e != nil && err == nil {
+			err = e
+		}
+	}()
+	if err = s.handle.OnBoot(s); err != nil {
 		return err
 	}
 	go s.ticker()
 	for true {
-		conn, err := s.listen.Accept()
-		if err != nil {
-			return err
+		c, e := s.listen.Accept()
+		if e != nil {
+			return e
 		}
-		go newConn(s.handle, &s.conns, &s.running, conn)
+		go newConn(s, c)
 	}
-	return nil
+	return err
 }
 
-func (s *server) Shutdown() error {
+// Shutdown 关停服务
+func (s *server) Shutdown() (err error) {
 	if atomic.SwapInt32(&s.running, 0) != 1 {
 		return ErrShutdown
 	}
 	close(s.closedCh)
-	if err := s.handle.OnShutdown(s); err != nil {
-		return err
-	}
+	s.handle.OnShutdown(s)
 	return s.listen.Close()
 }
 
@@ -104,6 +108,7 @@ func NewServer(protoAddr string, handle Handler, opts ...SvrOption) Server {
 		handle:    handle,
 		tick:      false,
 		conns:     0,
+		buffs:     newBuffs(),
 	}
 	for _, opt := range opts {
 		opt(svr)

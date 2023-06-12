@@ -11,7 +11,6 @@ import (
 type Conn interface {
 	Read(b []byte) (n int, err error)   // 读取数据
 	Write(b []byte) (n int, err error)  // 写入数据
-	Conn() net.Conn                     // 返回原始连接(不建议)
 	Close() error                       // 关闭连接
 	LocalAddr() net.Addr                // 返回本地网络地址
 	RemoteAddr() net.Addr               // 返回远端网络地址
@@ -29,7 +28,7 @@ type connection struct {
 	reading int32
 	writMu  sync.Mutex
 	flag    *int32
-	buf     *bytes.Buffer
+	buffer  *bytes.Buffer
 	err     error
 	handle  Handler
 	conns   *int32
@@ -39,14 +38,10 @@ type connection struct {
 func (c *connection) Read(b []byte) (n int, err error) {
 	if c.IsClosed() {
 		return 0, net.ErrClosed
-	}
-	if _, err = c.read(); err != nil {
-		return 0, err
-	}
-	if atomic.SwapInt32(&c.reading, 1) != 0 {
+	} else if atomic.SwapInt32(&c.reading, 1) != 0 {
 		return 0, nil
 	}
-	n, err = c.buf.Read(b)
+	n, err = c.buffer.Read(b)
 	atomic.StoreInt32(&c.reading, 0)
 	return n, err
 }
@@ -56,13 +51,9 @@ func (c *connection) Write(b []byte) (n int, err error) {
 		return 0, net.ErrClosed
 	}
 	c.writMu.Lock()
-	n, err = c.buf.Write(b)
+	n, err = c.conn.Write(b)
 	c.writMu.Unlock()
 	return n, err
-}
-
-func (c *connection) Conn() net.Conn {
-	return c.conn
 }
 
 func (c *connection) Close() error {
@@ -109,12 +100,17 @@ func (c *connection) SetContext(ctx interface{}) {
 	c.ctx = ctx
 }
 
-func (c *connection) read() (int64, error) {
+func (c *connection) read() (int, error) {
 	if atomic.SwapInt32(&c.reading, 1) != 0 {
 		return 0, nil
 	}
-	n, err := c.buf.ReadFrom(c.conn)
+	buf := getBuf()
+	n, err := c.conn.Read(buf[:])
+	if n > 0 {
+		c.buffer.Write(buf[:n])
+	}
 	atomic.StoreInt32(&c.reading, 0)
+	putBuf(buf)
 	return n, err
 }
 
@@ -124,13 +120,13 @@ func (c *connection) run() {
 	if c.handle.OnOpened(c) != nil {
 		return
 	}
+	var cnt int
 	for !c.IsClosed() && atomic.LoadInt32(c.flag) == 1 {
-		if cnt, err := c.read(); err != nil {
-			c.err = err
-			return
+		if cnt, c.err = c.read(); c.err != nil {
+			break
 		} else if cnt > 0 {
 			if c.err = c.handle.OnActivate(c); c.err != nil {
-				return
+				break
 			}
 		}
 	}
@@ -143,7 +139,7 @@ func newConn(handle Handler, conns *int32, flag *int32, conn net.Conn) {
 		reading: 0,
 		writMu:  sync.Mutex{},
 		flag:    flag,
-		buf:     new(bytes.Buffer),
+		buffer:  new(bytes.Buffer),
 		err:     nil,
 		handle:  handle,
 		conns:   conns,

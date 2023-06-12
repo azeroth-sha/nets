@@ -55,6 +55,7 @@ func (s *server) Serve() error {
 		return ErrRunning
 	}
 	if listen, err := Listen(s.protoAddr, s.keepalive, s.listenCtl); err != nil {
+		atomic.StoreInt32(&s.running, 0)
 		return err
 	} else {
 		s.listen = listen

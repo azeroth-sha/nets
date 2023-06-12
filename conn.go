@@ -19,6 +19,8 @@ type Conn interface {
 	SetReadDeadline(t time.Time) error  // 设置读取超时时间
 	SetWriteDeadline(t time.Time) error // 设置写入超时时间
 	IsClosed() bool                     // 连接是否已关闭
+	Context() interface{}               // 获取上下文信息
+	SetContext(ctx interface{})         // 设置上下文信息
 }
 
 type connection struct {
@@ -31,6 +33,7 @@ type connection struct {
 	err     error
 	handle  Handler
 	conns   *int32
+	ctx     interface{}
 }
 
 func (c *connection) Read(b []byte) (n int, err error) {
@@ -96,6 +99,14 @@ func (c *connection) SetWriteDeadline(t time.Time) error {
 
 func (c *connection) IsClosed() bool {
 	return atomic.LoadInt32(&c.closed) == 1
+}
+
+func (c *connection) Context() interface{} {
+	return c.ctx
+}
+
+func (c *connection) SetContext(ctx interface{}) {
+	c.ctx = ctx
 }
 
 func (c *connection) read() (int64, error) {

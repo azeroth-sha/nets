@@ -2,6 +2,7 @@ package nets
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -35,13 +36,46 @@ type connection struct {
 	buffs   *buffs
 }
 
+func (c *connection) read() (int, error) {
+	if atomic.SwapInt32(&c.reading, 1) != 0 {
+		return 0, nil
+	}
+	if c.buffer == nil {
+		c.buffer = c.buffs.GetCache()
+	}
+	buf := c.buffs.Get()
+	defer c.buffs.Put(buf)
+	var (
+		cnt int
+		err error
+	)
+	for {
+		n, e := c.conn.Read(buf[:])
+		if n > 0 {
+			cnt += n
+			c.buffer.Write(buf[:n])
+		} else if n <= 0 || e != nil {
+			err = e
+			break
+		}
+	}
+	atomic.StoreInt32(&c.reading, 0)
+	return cnt, err
+}
+
+// Read 从缓冲中读出数据(由于为非阻塞，以io.EOF为读取结束标记)
 func (c *connection) Read(b []byte) (n int, err error) {
 	if c.IsClosed() {
 		return 0, net.ErrClosed
 	} else if atomic.SwapInt32(&c.reading, 1) != 0 {
 		return 0, nil
 	}
-	n, err = c.buffer.Read(b)
+	if c.buffer != nil {
+		if n, err = c.buffer.Read(b); err == io.EOF {
+			c.buffs.PutCache(c.buffer)
+			c.buffer = nil
+		}
+	}
 	atomic.StoreInt32(&c.reading, 0)
 	return n, err
 }
@@ -100,20 +134,6 @@ func (c *connection) SetContext(ctx interface{}) {
 	c.ctx = ctx
 }
 
-func (c *connection) read() (int, error) {
-	if atomic.SwapInt32(&c.reading, 1) != 0 {
-		return 0, nil
-	}
-	buf := c.buffs.Get()
-	defer c.buffs.Put(buf)
-	n, err := c.conn.Read(buf[:])
-	if n > 0 {
-		c.buffer.Write(buf[:n])
-	}
-	atomic.StoreInt32(&c.reading, 0)
-	return n, err
-}
-
 func (c *connection) run() {
 	defer c.Close()
 	atomic.AddInt32(c.cnt, 1)
@@ -121,6 +141,8 @@ func (c *connection) run() {
 		return
 	}
 	var cnt int
+	var tk = time.NewTimer(time.Millisecond * 15)
+	defer tk.Stop()
 	for !c.IsClosed() && atomic.LoadInt32(c.flag) == 1 {
 		if cnt, c.err = c.read(); c.err != nil {
 			break
@@ -128,6 +150,8 @@ func (c *connection) run() {
 			if c.err = c.handle.OnActivate(c); c.err != nil {
 				break
 			}
+		} else {
+			<-tk.C
 		}
 	}
 }

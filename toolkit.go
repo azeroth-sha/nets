@@ -6,8 +6,8 @@ import (
 	"strconv"
 )
 
-// ParseProtoAddr 主机协议地址解析
-func ParseProtoAddr(protoAddr string) (proto, addr string, err error) {
+// parseAddr 协议地址解析
+func parseAddr(protoAddr string) (proto, addr string, err error) {
 	addrUrl, err := url.Parse(protoAddr)
 	if err != nil {
 		return "", "", err

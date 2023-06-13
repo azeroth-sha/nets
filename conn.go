@@ -2,24 +2,24 @@ package nets
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+type ConnHandler interface {
+	OnOpened(conn Conn) (err error)   // 打开连接触发
+	OnClosed(conn Conn, err error)    // 关闭连接触发
+	OnActivate(conn Conn) (err error) // 收到数据触发
+}
+
 type Conn interface {
-	Read(b []byte) (n int, err error)   // 读取数据
-	Write(b []byte) (n int, err error)  // 写入数据
-	Close() error                       // 关闭连接
-	LocalAddr() net.Addr                // 返回本地网络地址
-	RemoteAddr() net.Addr               // 返回远端网络地址
-	SetDeadline(t time.Time) error      // 设置综合超时时间
-	SetReadDeadline(t time.Time) error  // 设置读取超时时间
-	SetWriteDeadline(t time.Time) error // 设置写入超时时间
-	IsClosed() bool                     // 连接是否已关闭
-	Context() interface{}               // 获取上下文信息
-	SetContext(ctx interface{})         // 设置上下文信息
+	net.Conn
+	IsClosed() bool             // 连接是否已关闭
+	Context() interface{}       // 获取上下文信息
+	SetContext(ctx interface{}) // 设置上下文信息
 }
 
 type connection struct {
@@ -30,18 +30,52 @@ type connection struct {
 	flag    *int32
 	buffer  *bytes.Buffer
 	err     error
-	handle  Handler
-	conns   *int32
+	handle  ConnHandler
+	cnt     *int32
 	ctx     interface{}
+	buffs   *buffs
 }
 
+func (c *connection) read() (int, error) {
+	if atomic.SwapInt32(&c.reading, 1) != 0 {
+		return 0, nil
+	}
+	if c.buffer == nil {
+		c.buffer = c.buffs.GetCache()
+	}
+	buf := c.buffs.Get()
+	defer c.buffs.Put(buf)
+	var (
+		cnt int
+		err error
+	)
+	for {
+		n, e := c.conn.Read(buf[:])
+		if n > 0 {
+			cnt += n
+			c.buffer.Write(buf[:n])
+		} else if n <= 0 || e != nil {
+			err = e
+			break
+		}
+	}
+	atomic.StoreInt32(&c.reading, 0)
+	return cnt, err
+}
+
+// Read 从缓冲中读出数据(由于为非阻塞，以io.EOF为读取结束标记)
 func (c *connection) Read(b []byte) (n int, err error) {
 	if c.IsClosed() {
 		return 0, net.ErrClosed
 	} else if atomic.SwapInt32(&c.reading, 1) != 0 {
 		return 0, nil
 	}
-	n, err = c.buffer.Read(b)
+	if c.buffer != nil {
+		if n, err = c.buffer.Read(b); err == io.EOF {
+			c.buffs.PutCache(c.buffer)
+			c.buffer = nil
+		}
+	}
 	atomic.StoreInt32(&c.reading, 0)
 	return n, err
 }
@@ -60,7 +94,7 @@ func (c *connection) Close() error {
 	if atomic.SwapInt32(&c.closed, 1) != 0 {
 		return net.ErrClosed
 	}
-	atomic.AddInt32(c.conns, -1)
+	atomic.AddInt32(c.cnt, -1)
 	if err := c.conn.Close(); err != nil && c.err == nil {
 		c.err = err
 	}
@@ -100,27 +134,15 @@ func (c *connection) SetContext(ctx interface{}) {
 	c.ctx = ctx
 }
 
-func (c *connection) read() (int, error) {
-	if atomic.SwapInt32(&c.reading, 1) != 0 {
-		return 0, nil
-	}
-	buf := getBuf()
-	n, err := c.conn.Read(buf[:])
-	if n > 0 {
-		c.buffer.Write(buf[:n])
-	}
-	atomic.StoreInt32(&c.reading, 0)
-	putBuf(buf)
-	return n, err
-}
-
 func (c *connection) run() {
 	defer c.Close()
-	atomic.AddInt32(c.conns, 1)
+	atomic.AddInt32(c.cnt, 1)
 	if c.handle.OnOpened(c) != nil {
 		return
 	}
 	var cnt int
+	var tk = time.NewTimer(time.Millisecond * 15)
+	defer tk.Stop()
 	for !c.IsClosed() && atomic.LoadInt32(c.flag) == 1 {
 		if cnt, c.err = c.read(); c.err != nil {
 			break
@@ -128,21 +150,43 @@ func (c *connection) run() {
 			if c.err = c.handle.OnActivate(c); c.err != nil {
 				break
 			}
+		} else {
+			<-tk.C
 		}
 	}
 }
 
-func newConn(handle Handler, conns *int32, flag *int32, conn net.Conn) {
+func newSvrConn(svr *server, conn net.Conn) {
 	c := &connection{
 		conn:    conn,
 		closed:  0,
 		reading: 0,
 		writMu:  sync.Mutex{},
-		flag:    flag,
+		flag:    &svr.running,
 		buffer:  new(bytes.Buffer),
 		err:     nil,
-		handle:  handle,
-		conns:   conns,
+		handle:  svr.handle,
+		cnt:     &svr.conns,
+		ctx:     nil,
+		buffs:   svr.buffs,
 	}
 	go c.run()
+}
+
+func newCliConn(cli *client, conn net.Conn) *connection {
+	c := &connection{
+		conn:    conn,
+		closed:  0,
+		reading: 0,
+		writMu:  sync.Mutex{},
+		flag:    &cli.running,
+		buffer:  new(bytes.Buffer),
+		err:     nil,
+		handle:  cli.handle,
+		cnt:     &cli.conns,
+		ctx:     nil,
+		buffs:   cli.buffs,
+	}
+	go c.run()
+	return c
 }

@@ -41,8 +41,8 @@ func WithCliKeepalive(dur time.Duration) CliOption {
 	}
 }
 
-// WithCliListenCtl 选择自定义监听回调
-func WithCliListenCtl(ctl NetCtl) CliOption {
+// WithCliDialCtl 选择自定义拨号回调
+func WithCliDialCtl(ctl NetCtl) CliOption {
 	return func(cli *client) {
 		cli.conf.Control = ctl
 	}

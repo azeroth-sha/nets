@@ -49,15 +49,8 @@ func (c *connection) read() (int, error) {
 		cnt int
 		err error
 	)
-	for {
-		n, e := c.conn.Read(buf[:])
-		if n > 0 {
-			cnt += n
-			c.buffer.Write(buf[:n])
-		} else if n <= 0 || e != nil {
-			err = e
-			break
-		}
+	if cnt, err = c.conn.Read(buf); cnt > 0 {
+		c.buffer.Write(buf[:cnt])
 	}
 	atomic.StoreInt32(&c.reading, 0)
 	return cnt, err

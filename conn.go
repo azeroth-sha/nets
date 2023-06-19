@@ -104,13 +104,13 @@ func (c *connection) read() (int, error) {
 	if atomic.SwapInt32(&c.reading, 1) != 0 {
 		return 0, nil
 	}
+	defer atomic.StoreInt32(&c.reading, 0)
 	buf := c.buffs.Get()
 	defer c.buffs.Put(buf)
 	n, err := c.conn.Read(buf[:])
 	if n > 0 {
 		c.buffer.Write(buf[:n])
 	}
-	atomic.StoreInt32(&c.reading, 0)
 	return n, err
 }
 
@@ -122,12 +122,12 @@ func (c *connection) run() {
 	}
 	var cnt int
 	for !c.IsClosed() && atomic.LoadInt32(c.flag) == 1 {
-		if cnt, c.err = c.read(); c.err != nil {
-			break
-		} else if cnt > 0 {
+		if cnt, c.err = c.read(); cnt > 0 {
 			if c.err = c.handle.OnActivate(c); c.err != nil {
 				break
 			}
+		} else if c.err != nil {
+			break
 		}
 	}
 }

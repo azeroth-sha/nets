@@ -23,37 +23,35 @@ type Conn interface {
 }
 
 type connection struct {
-	conn    net.Conn
-	closed  int32
-	reading int32
-	writMu  sync.Mutex
-	flag    *int32
-	buffer  *bytes.Buffer
-	err     error
-	handle  ConnHandler
-	cnt     *int32
-	ctx     interface{}
-	buffs   *buffs
+	conn       net.Conn
+	closed     int32
+	reading    int32
+	writMu     sync.Mutex
+	svrRunning *int32
+	buffer     *bytes.Buffer
+	err        error
+	handle     ConnHandler
+	cnt        *int32
+	ctx        interface{}
+	buffs      *buffs
 }
 
 func (c *connection) read() (int, error) {
 	if atomic.SwapInt32(&c.reading, 1) != 0 {
 		return 0, nil
 	}
+	defer atomic.StoreInt32(&c.reading, 0)
 	if c.buffer == nil {
 		c.buffer = c.buffs.GetCache()
 	}
 	buf := c.buffs.Get()
 	defer c.buffs.Put(buf)
-	var (
-		cnt int
-		err error
-	)
-	if cnt, err = c.conn.Read(buf); cnt > 0 {
+	if cnt, err := c.conn.Read(buf); cnt > 0 {
 		c.buffer.Write(buf[:cnt])
+		return cnt, nil
+	} else {
+		return 0, err
 	}
-	atomic.StoreInt32(&c.reading, 0)
-	return cnt, err
 }
 
 // Read 从缓冲中读出数据(由于为非阻塞，以io.EOF为读取结束标记)
@@ -134,51 +132,47 @@ func (c *connection) run() {
 		return
 	}
 	var cnt int
-	var tk = time.NewTimer(time.Millisecond * 15)
-	defer tk.Stop()
-	for !c.IsClosed() && atomic.LoadInt32(c.flag) == 1 {
-		if cnt, c.err = c.read(); c.err != nil {
-			break
-		} else if cnt > 0 {
+	for !c.IsClosed() && atomic.LoadInt32(c.svrRunning) == 1 {
+		if cnt, c.err = c.read(); cnt > 0 {
 			if c.err = c.handle.OnActivate(c); c.err != nil {
 				break
 			}
-		} else {
-			<-tk.C
+		} else if c.err != nil {
+			break
 		}
 	}
 }
 
 func newSvrConn(svr *server, conn net.Conn) {
 	c := &connection{
-		conn:    conn,
-		closed:  0,
-		reading: 0,
-		writMu:  sync.Mutex{},
-		flag:    &svr.running,
-		buffer:  new(bytes.Buffer),
-		err:     nil,
-		handle:  svr.handle,
-		cnt:     &svr.conns,
-		ctx:     nil,
-		buffs:   svr.buffs,
+		conn:       conn,
+		closed:     0,
+		reading:    0,
+		writMu:     sync.Mutex{},
+		svrRunning: &svr.running,
+		buffer:     new(bytes.Buffer),
+		err:        nil,
+		handle:     svr.handle,
+		cnt:        &svr.conns,
+		ctx:        nil,
+		buffs:      svr.buffs,
 	}
 	go c.run()
 }
 
 func newCliConn(cli *client, conn net.Conn) *connection {
 	c := &connection{
-		conn:    conn,
-		closed:  0,
-		reading: 0,
-		writMu:  sync.Mutex{},
-		flag:    &cli.running,
-		buffer:  new(bytes.Buffer),
-		err:     nil,
-		handle:  cli.handle,
-		cnt:     &cli.conns,
-		ctx:     nil,
-		buffs:   cli.buffs,
+		conn:       conn,
+		closed:     0,
+		reading:    0,
+		writMu:     sync.Mutex{},
+		svrRunning: &cli.running,
+		buffer:     new(bytes.Buffer),
+		err:        nil,
+		handle:     cli.handle,
+		cnt:        &cli.conns,
+		ctx:        nil,
+		buffs:      cli.buffs,
 	}
 	go c.run()
 	return c

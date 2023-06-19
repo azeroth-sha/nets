@@ -26,7 +26,7 @@ type client struct {
 	closedCh  chan struct{}
 	protoAddr string
 	conf      *net.Dialer
-	handle    SvrHandler
+	handle    CliHandler
 	tick      bool
 	conns     int32
 	buffs     *buffs
@@ -89,7 +89,7 @@ func (c *client) Conns() int32 {
 }
 
 // NewClient 返回一个新的服务对象
-func NewClient(protoAddr string, handle SvrHandler, opts ...CliOption) Client {
+func NewClient(protoAddr string, handle CliHandler, opts ...CliOption) Client {
 	cli := &client{
 		running:   0,
 		closedCh:  nil,

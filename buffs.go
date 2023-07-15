@@ -5,45 +5,41 @@ import (
 	"sync"
 )
 
-type buffs struct {
-	cap   int32
-	pool  *sync.Pool
-	cache *sync.Pool
+type Buffs struct {
+	bufCap   uint32
+	bufPool  *sync.Pool
+	buffPool *sync.Pool
 }
 
-func (b *buffs) newBuf() interface{} {
-	return make([]byte, b.cap, b.cap)
+func (p *Buffs) newBuf() interface{} {
+	return make([]byte, p.bufCap, p.bufCap)
 }
 
-func (b *buffs) Get() []byte {
-	return b.pool.Get().([]byte)
+func (p *Buffs) GetBuf() []byte {
+	return p.bufPool.Get().([]byte)
 }
 
-func (b *buffs) Put(p []byte) {
-	b.pool.Put(p)
+func (p *Buffs) PutBuf(b []byte) {
+	p.bufPool.Put(b)
 }
 
-func (b *buffs) newCache() interface{} {
-	return bytes.NewBuffer(nil)
+func (p *Buffs) newBuff() interface{} {
+	return bytes.NewBuffer(p.GetBuf()[:0])
 }
 
-func (b *buffs) GetCache() *bytes.Buffer {
-	return b.cache.Get().(*bytes.Buffer)
+func (p *Buffs) GetBuff() *bytes.Buffer {
+	return p.buffPool.Get().(*bytes.Buffer)
 }
 
-func (b *buffs) PutCache(p *bytes.Buffer) {
-	b.cache.Put(p)
+func (p *Buffs) PutBuff(b *bytes.Buffer) {
+	p.buffPool.Put(b)
 }
 
-func (b *buffs) reset(size int32) {
-	b.cap = size
-}
-
-func newBuffs() *buffs {
-	b := &buffs{
-		cap: 4 << 10,
+func NewBuffs(c uint32) *Buffs {
+	b := &Buffs{
+		bufCap: c,
 	}
-	b.pool = &sync.Pool{New: b.newBuf}
-	b.cache = &sync.Pool{New: b.newCache}
+	b.bufPool = &sync.Pool{New: b.newBuf}
+	b.buffPool = &sync.Pool{New: b.newBuff}
 	return b
 }

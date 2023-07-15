@@ -1,17 +1,16 @@
 package nets
 
 import (
-	"context"
 	"net"
 	"sync/atomic"
 	"time"
 )
 
 type CliHandler interface {
-	ConnHandler
 	OnBoot(cli Client) (err error) // 启动客户端触发
 	OnShutdown(cli Client)         // 关闭客户端触发
 	OnTick() (dur time.Duration)   // 定时触发
+	ConnHandler
 }
 
 type Client interface {
@@ -23,85 +22,76 @@ type Client interface {
 
 type client struct {
 	running   int32
-	closedCh  chan struct{}
+	closed    chan struct{}
 	protoAddr string
 	conf      *net.Dialer
-	handle    CliHandler
+	handler   CliHandler
 	tick      bool
 	conns     int32
-	buffs     *buffs
+	buffs     *Buffs
 }
 
 func (c *client) ticker() {
 	if !c.tick {
 		return
 	}
-	var tm = time.NewTimer(c.handle.OnTick())
-	defer tm.Stop()
-	for atomic.LoadInt32(&c.running) == 1 {
+	tk := time.NewTicker(c.handler.OnTick())
+	defer tk.Stop()
+BREAK:
+	for {
 		select {
-		case <-c.closedCh:
-			return
-		case <-tm.C:
-			tm.Reset(c.handle.OnTick())
+		case <-c.closed:
+			break BREAK
+		case <-tk.C:
+			tk.Reset(c.handler.OnTick())
 		}
 	}
 }
 
-// Serve 启动服务
 func (c *client) Serve() error {
 	if atomic.SwapInt32(&c.running, 1) != 0 {
 		return ErrRunning
 	}
+	if err := c.handler.OnBoot(c); err != nil {
+		_ = c.Shutdown()
+		return err
+	}
+	c.closed = make(chan struct{})
 	go c.ticker()
 	return nil
 }
 
-// Shutdown 停止服务
 func (c *client) Shutdown() error {
 	if atomic.SwapInt32(&c.running, 0) != 1 {
-		return ErrShutdown
+		return ErrStopped
 	}
-	close(c.closedCh)
-	c.handle.OnShutdown(c)
+	close(c.closed)
+	c.handler.OnShutdown(c)
 	return nil
 }
 
 func (c *client) NewConn() (Conn, error) {
-	var ctx context.Context
-	var cancel func()
-	if c.conf.Timeout <= 0 {
-		ctx = context.Background()
-	} else {
-		ctx, cancel = context.WithTimeout(context.Background(), c.conf.Timeout)
-		defer cancel()
-	}
-	conn, err := Dial(ctx, c.protoAddr, c.conf)
+	conn, err := dial(c.protoAddr, c.conf)
 	if err != nil {
 		return nil, err
 	}
-	return newCliConn(c, conn), nil
+	return newConn(c.buffs, c.handler, &c.conns, conn), nil
 }
 
-// Conns 获取当前连接数
 func (c *client) Conns() int32 {
 	return atomic.LoadInt32(&c.conns)
 }
 
 // NewClient 返回一个新的服务对象
-func NewClient(protoAddr string, handle CliHandler, opts ...CliOption) Client {
+func NewClient(protoAddr string, handler CliHandler, opts ...CliOption) Client {
 	cli := &client{
-		running:   0,
-		closedCh:  nil,
 		protoAddr: protoAddr,
 		conf:      new(net.Dialer),
-		handle:    handle,
-		tick:      false,
-		conns:     0,
-		buffs:     newBuffs(),
+		handler:   handler,
+		buffs:     NewBuffs(4 << 10),
 	}
-	for _, opt := range opts {
-		opt(cli)
+	for _, option := range opts {
+		option(cli)
 	}
 	return cli
 }

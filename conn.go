@@ -2,6 +2,7 @@ package nets
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -23,74 +24,50 @@ type Conn interface {
 }
 
 type connection struct {
-	conn       net.Conn
-	closed     int32
-	reading    int32
-	writMu     sync.Mutex
-	svrRunning *int32
-	buffer     *bytes.Buffer
-	err        error
-	handle     ConnHandler
-	cnt        *int32
-	ctx        interface{}
-	buffs      *buffs
+	handler  ConnHandler
+	closed   int32
+	conn     net.Conn
+	reading  int32
+	readBuff *bytes.Buffer
+	writLock *sync.Mutex
+	ctx      *atomic.Value
+	buffs    *Buffs
+	count    *int32
 }
 
-func (c *connection) read() (int, error) {
-	if atomic.SwapInt32(&c.reading, 1) != 0 {
-		return 0, nil
-	}
-	defer atomic.StoreInt32(&c.reading, 0)
-	if c.buffer == nil {
-		c.buffer = c.buffs.GetCache()
-	}
-	buf := c.buffs.Get()
-	defer c.buffs.Put(buf)
-	if cnt, err := c.conn.Read(buf); cnt > 0 {
-		c.buffer.Write(buf[:cnt])
-		return cnt, nil
-	} else {
-		return 0, err
-	}
-}
-
-// Read 从缓冲中读出数据(由于为非阻塞，以io.EOF为读取结束标记)
 func (c *connection) Read(b []byte) (n int, err error) {
 	if c.IsClosed() {
-		return 0, net.ErrClosed
+		return 0, ErrClosed
 	} else if atomic.SwapInt32(&c.reading, 1) != 0 {
 		return 0, nil
 	}
-	if c.buffer != nil {
-		if n, err = c.buffer.Read(b); err == io.EOF {
-			c.buffs.PutCache(c.buffer)
-			c.buffer = nil
-		}
+	defer atomic.StoreInt32(&c.reading, 0)
+	if c.readBuff == nil {
+		return 0, nil
 	}
-	atomic.StoreInt32(&c.reading, 0)
+	n, err = c.readBuff.Read(b)
+	if err == io.EOF {
+		c.buffs.PutBuff(c.readBuff)
+		c.readBuff = nil
+		return n, nil
+	}
 	return n, err
 }
 
 func (c *connection) Write(b []byte) (n int, err error) {
 	if c.IsClosed() {
-		return 0, net.ErrClosed
+		return 0, ErrClosed
 	}
-	c.writMu.Lock()
-	n, err = c.conn.Write(b)
-	c.writMu.Unlock()
-	return n, err
+	c.writLock.Lock()
+	defer c.writLock.Unlock()
+	return c.conn.Write(b)
 }
 
 func (c *connection) Close() error {
 	if atomic.SwapInt32(&c.closed, 1) != 0 {
-		return net.ErrClosed
+		return ErrClosed
 	}
-	atomic.AddInt32(c.cnt, -1)
-	if err := c.conn.Close(); err != nil && c.err == nil {
-		c.err = err
-	}
-	c.handle.OnClosed(c, c.err)
-	return c.err
+	return c.conn.Close()
 }
 
 func (c *connection) LocalAddr() net.Addr {
@@ -102,14 +79,23 @@ func (c *connection) RemoteAddr() net.Addr {
 }
 
 func (c *connection) SetDeadline(t time.Time) error {
+	if c.IsClosed() {
+		return ErrClosed
+	}
 	return c.conn.SetDeadline(t)
 }
 
 func (c *connection) SetReadDeadline(t time.Time) error {
+	if c.IsClosed() {
+		return ErrClosed
+	}
 	return c.conn.SetReadDeadline(t)
 }
 
 func (c *connection) SetWriteDeadline(t time.Time) error {
+	if c.IsClosed() {
+		return ErrClosed
+	}
 	return c.conn.SetWriteDeadline(t)
 }
 
@@ -118,61 +104,77 @@ func (c *connection) IsClosed() bool {
 }
 
 func (c *connection) Context() interface{} {
-	return c.ctx
+	return c.ctx.Load()
 }
 
 func (c *connection) SetContext(ctx interface{}) {
-	c.ctx = ctx
+	c.ctx.Store(ctx)
+}
+
+func (c *connection) read() error {
+	if c.IsClosed() {
+		return ErrClosed
+	} else if atomic.SwapInt32(&c.reading, 1) != 0 {
+		return nil
+	}
+	defer atomic.StoreInt32(&c.reading, 0)
+	buf := c.buffs.GetBuf()
+	defer c.buffs.PutBuf(buf)
+	n, err := c.conn.Read(buf)
+	if n > 0 {
+		if c.readBuff == nil {
+			c.readBuff = c.buffs.GetBuff()
+		}
+		c.readBuff.Write(buf[:n])
+	}
+	if n > 0 && err == io.EOF {
+		return nil
+	} else {
+		return err
+	}
 }
 
 func (c *connection) run() {
-	defer c.Close()
-	atomic.AddInt32(c.cnt, 1)
-	if c.handle.OnOpened(c) != nil {
+	var err error
+	atomic.AddInt32(c.count, 1)
+	defer func() {
+		_ = c.Close()
+		_ = c.callback(c.handler.OnClosed, err)
+		atomic.AddInt32(c.count, -1)
+	}()
+	if err = c.callback(c.handler.OnOpened, nil); err != nil {
 		return
 	}
-	var cnt int
-	for !c.IsClosed() && atomic.LoadInt32(c.svrRunning) == 1 {
-		if cnt, c.err = c.read(); cnt > 0 {
-			if c.err = c.handle.OnActivate(c); c.err != nil {
-				break
-			}
-		} else if c.err != nil {
+	for err = c.read(); err == nil && !c.IsClosed(); err = c.read() {
+		if err = c.callback(c.handler.OnActivate, nil); err != nil {
 			break
 		}
 	}
 }
 
-func newSvrConn(svr *server, conn net.Conn) {
-	c := &connection{
-		conn:       conn,
-		closed:     0,
-		reading:    0,
-		writMu:     sync.Mutex{},
-		svrRunning: &svr.running,
-		buffer:     new(bytes.Buffer),
-		err:        nil,
-		handle:     svr.handle,
-		cnt:        &svr.conns,
-		ctx:        nil,
-		buffs:      svr.buffs,
+func (c *connection) callback(f interface{}, e error) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("%v", rec)
+		}
+	}()
+	switch call := f.(type) {
+	case func(Conn) error:
+		return call(c)
+	case func(Conn, error):
+		call(c, e)
 	}
-	go c.run()
+	return nil
 }
 
-func newCliConn(cli *client, conn net.Conn) *connection {
+func newConn(buffs *Buffs, handler ConnHandler, count *int32, conn net.Conn) Conn {
 	c := &connection{
-		conn:       conn,
-		closed:     0,
-		reading:    0,
-		writMu:     sync.Mutex{},
-		svrRunning: &cli.running,
-		buffer:     new(bytes.Buffer),
-		err:        nil,
-		handle:     cli.handle,
-		cnt:        &cli.conns,
-		ctx:        nil,
-		buffs:      cli.buffs,
+		handler:  handler,
+		conn:     conn,
+		writLock: new(sync.Mutex),
+		ctx:      new(atomic.Value),
+		buffs:    buffs,
+		count:    count,
 	}
 	go c.run()
 	return c

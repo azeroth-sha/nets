@@ -7,10 +7,10 @@ import (
 )
 
 type SvrHandler interface {
-	ConnHandler
 	OnBoot(svr Server) (err error) // 启动服务端触发
 	OnShutdown(svr Server)         // 关闭服务端触发
 	OnTick() (dur time.Duration)   // 定时触发
+	ConnHandler
 }
 
 type Server interface {
@@ -19,96 +19,91 @@ type Server interface {
 	Conns() int32
 }
 
-// server 服务实现
 type server struct {
 	running   int32
-	closedCh  chan struct{}
+	closed    chan struct{}
 	protoAddr string
 	conf      *net.ListenConfig
-	listen    net.Listener
-	handle    SvrHandler
+	listener  net.Listener
+	handler   SvrHandler
 	tick      bool
 	conns     int32
-	buffs     *buffs
+	buffs     *Buffs
 }
 
 func (s *server) ticker() {
 	if !s.tick {
 		return
 	}
-	var tm = time.NewTimer(s.handle.OnTick())
-	defer tm.Stop()
-	for atomic.LoadInt32(&s.running) == 1 {
+	tk := time.NewTicker(s.handler.OnTick())
+	defer tk.Stop()
+BREAK:
+	for {
 		select {
-		case <-s.closedCh:
-			return
-		case <-tm.C:
-			tm.Reset(s.handle.OnTick())
+		case <-s.closed:
+			break BREAK
+		case <-tk.C:
+			tk.Reset(s.handler.OnTick())
 		}
 	}
 }
 
-// Serve 启动服务
-func (s *server) Serve() (err error) {
+func (s *server) Serve() error {
 	if atomic.SwapInt32(&s.running, 1) != 0 {
 		return ErrRunning
 	}
-	if listen, e := Listen(s.protoAddr, s.conf); e != nil {
+	if listener, err := listenAddr(s.protoAddr, s.conf); err != nil {
 		atomic.StoreInt32(&s.running, 0)
-		return e
+		return err
 	} else {
-		s.listen = listen
-		s.closedCh = make(chan struct{}, 0)
+		s.listener = listener
 	}
-	defer func() {
-		if e := s.Shutdown(); e != nil && err == nil {
-			err = e
-		}
-	}()
-	if err = s.handle.OnBoot(s); err != nil {
+	defer s.Shutdown()
+	if err := s.handler.OnBoot(s); err != nil {
 		return err
 	}
+	s.closed = make(chan struct{})
+	defer close(s.closed)
 	go s.ticker()
-	for true {
-		c, e := s.listen.Accept()
-		if e != nil {
-			return e
+	var (
+		conn net.Conn
+		err  error
+	)
+BREAK:
+	for atomic.LoadInt32(&s.running) == 1 {
+		conn, err = s.listener.Accept()
+		if err != nil {
+			break BREAK
 		}
-		go newSvrConn(s, c)
+		_ = newConn(s.buffs, s.handler, &s.conns, conn)
 	}
 	return err
 }
 
-// Shutdown 关停服务
-func (s *server) Shutdown() (err error) {
+func (s *server) Shutdown() error {
 	if atomic.SwapInt32(&s.running, 0) != 1 {
-		return ErrShutdown
+		return ErrStopped
 	}
-	close(s.closedCh)
-	s.handle.OnShutdown(s)
-	return s.listen.Close()
+	defer atomic.StoreInt32(&s.conns, 0)
+	err := s.listener.Close()
+	s.handler.OnShutdown(s)
+	return err
 }
 
-// Conns 获取当前连接数
 func (s *server) Conns() int32 {
-	return atomic.LoadInt32(&s.conns)
+	return atomic.LoadInt32(&s.running)
 }
 
 // NewServer 返回一个新的服务对象
-func NewServer(protoAddr string, handle SvrHandler, opts ...SvrOption) Server {
+func NewServer(protoAddr string, handler SvrHandler, opts ...SvrOption) Server {
 	svr := &server{
-		running:   0,
-		closedCh:  nil,
 		protoAddr: protoAddr,
 		conf:      new(net.ListenConfig),
-		listen:    nil,
-		handle:    handle,
-		tick:      false,
-		conns:     0,
-		buffs:     newBuffs(),
+		handler:   handler,
+		buffs:     NewBuffs(4 << 10),
 	}
-	for _, opt := range opts {
-		opt(svr)
+	for _, option := range opts {
+		option(svr)
 	}
 	return svr
 }

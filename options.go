@@ -1,20 +1,26 @@
 package nets
 
-import "time"
+import (
+	"errors"
+	"net"
+)
+
+var (
+	ErrRunning = errors.New(`running`)
+	ErrStopped = errors.New(`stopped`)
+	ErrClosed  = net.ErrClosed
+)
+
+/*
+	服务端选项
+*/
 
 type SvrOption func(*server)
 
-// WithSvrKeepalive 选择保活时间
-func WithSvrKeepalive(dur time.Duration) SvrOption {
+// WithSvrListenConf 选择连接配置
+func WithSvrListenConf(conf net.ListenConfig) SvrOption {
 	return func(svr *server) {
-		svr.conf.KeepAlive = dur
-	}
-}
-
-// WithSvrListenCtl 选择自定义监听回调
-func WithSvrListenCtl(ctl NetCtl) SvrOption {
-	return func(svr *server) {
-		svr.conf.Control = ctl
+		svr.conf = &conf
 	}
 }
 
@@ -28,23 +34,20 @@ func WithSvrTick(flag bool) SvrOption {
 // WithSvrBufCap 自定义buf容量
 func WithSvrBufCap(size int) SvrOption {
 	return func(svr *server) {
-		svr.buffs.reset(int32(size))
+		svr.buffs.bufCap = uint32(size)
 	}
 }
+
+/*
+	客户端选项
+*/
 
 type CliOption func(*client)
 
-// WithCliKeepalive 选择保活时间
-func WithCliKeepalive(dur time.Duration) CliOption {
+// WithCliDialConf 选择连接配置
+func WithCliDialConf(conf net.Dialer) CliOption {
 	return func(cli *client) {
-		cli.conf.KeepAlive = dur
-	}
-}
-
-// WithCliDialCtl 选择自定义拨号回调
-func WithCliDialCtl(ctl NetCtl) CliOption {
-	return func(cli *client) {
-		cli.conf.Control = ctl
+		cli.conf = &conf
 	}
 }
 
@@ -58,13 +61,6 @@ func WithCliTick(flag bool) CliOption {
 // WithCliBufCap 自定义buf容量
 func WithCliBufCap(size int) CliOption {
 	return func(cli *client) {
-		cli.buffs.reset(int32(size))
-	}
-}
-
-// WithCliTimeout 自定义连接超时时间
-func WithCliTimeout(dur time.Duration) CliOption {
-	return func(cli *client) {
-		cli.conf.Timeout = dur
+		cli.buffs.bufCap = uint32(size)
 	}
 }

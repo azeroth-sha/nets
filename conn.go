@@ -27,9 +27,9 @@ type connection struct {
 	handler  ConnHandler
 	closed   int32
 	conn     net.Conn
-	reading  int32
+	readMu   *sync.Mutex
 	readBuff *bytes.Buffer
-	writLock *sync.Mutex
+	writMu   *sync.Mutex
 	ctx      *atomic.Value
 	buffs    *Buffs
 	count    *int32
@@ -38,10 +38,9 @@ type connection struct {
 func (c *connection) Read(b []byte) (n int, err error) {
 	if c.IsClosed() {
 		return 0, ErrClosed
-	} else if atomic.SwapInt32(&c.reading, 1) != 0 {
-		return 0, nil
 	}
-	defer atomic.StoreInt32(&c.reading, 0)
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	if c.readBuff == nil {
 		return 0, nil
 	}
@@ -58,8 +57,8 @@ func (c *connection) Write(b []byte) (n int, err error) {
 	if c.IsClosed() {
 		return 0, ErrClosed
 	}
-	c.writLock.Lock()
-	defer c.writLock.Unlock()
+	c.writMu.Lock()
+	defer c.writMu.Unlock()
 	return c.conn.Write(b)
 }
 
@@ -111,21 +110,33 @@ func (c *connection) SetContext(ctx interface{}) {
 	c.ctx.Store(ctx)
 }
 
+func (c *connection) append(b []byte) error {
+	if c.IsClosed() {
+		return ErrClosed
+	}
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	if len(b) == 0 {
+		return nil
+	}
+	if c.readBuff == nil {
+		c.readBuff = c.buffs.GetBuff()
+	}
+	_, err := c.readBuff.Write(b)
+	return err
+}
+
 func (c *connection) read() error {
 	if c.IsClosed() {
 		return ErrClosed
-	} else if atomic.SwapInt32(&c.reading, 1) != 0 {
-		return nil
 	}
-	defer atomic.StoreInt32(&c.reading, 0)
 	buf := c.buffs.GetBuf()
 	defer c.buffs.PutBuf(buf)
 	n, err := c.conn.Read(buf)
 	if n > 0 {
-		if c.readBuff == nil {
-			c.readBuff = c.buffs.GetBuff()
+		if err2 := c.append(buf[:n]); err2 != nil && err == nil {
+			err = err2
 		}
-		c.readBuff.Write(buf[:n])
 	}
 	if n > 0 && err == io.EOF {
 		return nil
@@ -169,12 +180,13 @@ func (c *connection) callback(f interface{}, e error) (err error) {
 
 func newConn(buffs *Buffs, handler ConnHandler, count *int32, conn net.Conn) Conn {
 	c := &connection{
-		handler:  handler,
-		conn:     conn,
-		writLock: new(sync.Mutex),
-		ctx:      new(atomic.Value),
-		buffs:    buffs,
-		count:    count,
+		handler: handler,
+		conn:    conn,
+		readMu:  new(sync.Mutex),
+		writMu:  new(sync.Mutex),
+		ctx:     new(atomic.Value),
+		buffs:   buffs,
+		count:   count,
 	}
 	go c.run()
 	return c

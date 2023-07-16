@@ -10,6 +10,7 @@
 ## 📖 简介
 
 `nets`是一个高性能、轻量级的Go标准库[net.Conn](https://pkg.go.dev/net#Conn)封装，每个conn仅启用一个goroutine，资源复用，达到更优的任务效果。
+
 特别说明: 设计灵感来自[Gnet](https://github.com/panjf2000/gnet)（包括本文档 ^_^），不依赖第三方库。
 
 ## 🚀 功能：

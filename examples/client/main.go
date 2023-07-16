@@ -60,23 +60,27 @@ func (h *handle) OnClosed(conn nets.Conn, err error) {
 }
 
 func (h *handle) OnActivate(conn nets.Conn) (err error) {
-	buf := make([]byte, 4096, 4096)
-	if n, err := conn.Read(buf); err != nil {
-		log.Panicln(err)
-	} else {
-		if n == 0 {
-			log.Printf("count: %d [%s]\r\n%s", n, buf[:n], debug.Stack())
+	go func() {
+		time.Sleep(time.Millisecond * 15)
+		buf := make([]byte, 4096, 4096)
+		if n, err := conn.Read(buf); err != nil {
+			log.Panicln(err)
 		} else {
-			log.Printf("count: %d [%s]", n, buf[:n])
-		}
+			if n == 0 {
+				log.Printf("count: %d [%s]\r\n%s", n, buf[:n], debug.Stack())
+			} else {
+				log.Printf("count: %d [%s]", n, buf[:n])
+			}
 
-	}
+		}
+	}()
 	return nil
 }
 
 func init() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.Lshortfile)
 }
+
 func main() {
 	svr := nets.NewClient(
 		protoAddr,
@@ -86,7 +90,7 @@ func main() {
 	if err := svr.Serve(); err != nil {
 		log.Println(err)
 	}
-	time.Sleep(time.Second * 10)
+	time.Sleep(time.Second * 15)
 	if err := svr.Shutdown(); err != nil {
 		log.Println(err)
 	}

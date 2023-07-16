@@ -80,7 +80,7 @@ func main() {
 			log.Println(err)
 		}
 	}()
-	time.Sleep(time.Second * 10)
+	time.Sleep(time.Second * 15)
 	if err := svr.Shutdown(); err != nil {
 		log.Println(err)
 	}

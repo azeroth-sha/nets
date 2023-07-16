@@ -5,6 +5,7 @@
 <a title="Release" target="_blank" href="https://github.com/azeroth-sha/nets/releases"><img src="https://img.shields.io/github/v/release/azeroth-sha/nets.svg?color=161823&style=flat-square&logo=smartthings" /></a>
 <a title="Tag" target="_blank" href="https://github.com/azeroth-sha/nets/tags"><img src="https://img.shields.io/github/v/tag/azeroth-sha/nets?color=%23ff8936&logo=fitbit&style=flat-square" /></a>
 <a title="Doc for nets" target="_blank" href="https://pkg.go.dev/github.com/azeroth-sha/nets?tab=doc"><img src="https://img.shields.io/badge/go.dev-doc-007d9c?style=flat-square&logo=read-the-docs" /></a>
+<a title="Require Go Version" target="_blank" href="https://github.com/azeroth-sha/nets"><img src="https://img.shields.io/badge/go-%3E%3D1.17-30dff3?style=flat-square&logo=go" /></a>
 </p>
 
 ## 📖 简介
